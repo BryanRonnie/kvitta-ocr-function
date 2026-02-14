@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from google.cloud import storage, pubsub_v1
+from google.cloud import storage
+from google.cloud import pubsub_v1
 from pymongo import MongoClient
 from datetime import datetime
 import uuid
@@ -8,29 +9,33 @@ import json
 
 app = FastAPI()
 
+# ---------- ENV ----------
 GCS_BUCKET = os.environ["GCS_BUCKET"]
 PUBSUB_TOPIC = os.environ["PUBSUB_TOPIC"]
-PROJECT_ID = os.environ["GCP_PROJECT"]
 MONGO_URI = os.environ["MONGODB_URI"]
 
+# ---------- CLIENTS ----------
 storage_client = storage.Client()
 publisher = pubsub_v1.PublisherClient()
 mongo_client = MongoClient(MONGO_URI)
 db = mongo_client.kvitta
 
-topic_path = publisher.topic_path(PROJECT_ID, PUBSUB_TOPIC)
+topic_path = publisher.topic_path(
+    os.environ["GCP_PROJECT"],
+    PUBSUB_TOPIC
+)
 
 
 @app.post("/receipts/upload")
 async def upload_receipt(file: UploadFile = File(...)):
 
     if file.content_type not in ["image/png", "image/jpeg", "image/jpg"]:
-        raise HTTPException(status_code=400, detail="Invalid file")
+        raise HTTPException(status_code=400, detail="Invalid file type")
 
     file_bytes = await file.read()
 
     if len(file_bytes) > 5 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="Max 5MB")
+        raise HTTPException(status_code=400, detail="File too large")
 
     receipt_id = str(uuid.uuid4())
     blob_name = f"{receipt_id}.png"
@@ -48,7 +53,7 @@ async def upload_receipt(file: UploadFile = File(...)):
         "created_at": datetime.utcnow()
     })
 
-    # Publish Pub/Sub job
+    # Publish Pub/Sub message
     publisher.publish(
         topic_path,
         json.dumps({
@@ -57,7 +62,10 @@ async def upload_receipt(file: UploadFile = File(...)):
         }).encode("utf-8")
     )
 
-    return {"receipt_id": receipt_id, "status": "pending"}
+    return {
+        "receipt_id": receipt_id,
+        "status": "pending"
+    }
 
 
 @app.get("/receipts/{receipt_id}")
